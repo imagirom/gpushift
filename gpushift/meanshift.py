@@ -63,13 +63,16 @@ class MeanShiftStep(torch.nn.Module):
 
         if kernel == MeanShiftStep.GAUSSIAN_KERNEL:
             factor = points.new([-1 / (2 * bandwidth ** 2)])
-            k_ij = (s_ij * factor).exp()             # B N1 N2 (1)
+            k_ij = (s_ij * factor).exp()  # B N1 N2 (1)
         elif kernel == MeanShiftStep.FLAT_KERNEL:
             squared_radius = points.new([bandwidth ** 2])
-            k_ij = (-s_ij + squared_radius).step()   # B N1 N2 (1)
+            if use_keops:
+                k_ij = (-s_ij + squared_radius).step()  # B N1 N2 (1)
+            else:
+                k_ij = ((-s_ij + squared_radius) > 0).float()  # B N1 N2 (1)
         elif kernel == MeanShiftStep.EPANECHNIKOV_KERNEL:
             squared_radius = points.new([bandwidth ** 2])
-            k_ij = (-s_ij + squared_radius).relu()   # B N1 N2 (1)
+            k_ij = (-s_ij + squared_radius).relu()  # B N1 N2 (1)
         else:
             assert False, f'Kernel {kernel} not supported. Choose one of {MeanShiftStep.KERNELS}'
 
