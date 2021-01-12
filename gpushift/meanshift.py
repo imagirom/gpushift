@@ -13,7 +13,7 @@ class MeanShiftStep(torch.nn.Module):
     EPANECHNIKOV_KERNEL = 'epanechnikov'
     KERNELS = [GAUSSIAN_KERNEL, FLAT_KERNEL, EPANECHNIKOV_KERNEL]
 
-    def __init__(self, bandwidth, kernel='gaussian', use_keops=True):
+    def __init__(self, bandwidth, kernel='gaussian', distance_metric=None, use_keops=True):
         """
         Module encapsulating a single mean shift step.
         :param bandwidth: float
@@ -22,15 +22,20 @@ class MeanShiftStep(torch.nn.Module):
         Which kernel to use. Has to be one of MeanShiftStep.KERNELS .
         :param use_keops: bool
         Whether to use the PyKeOps Library or only vanilla PyTorch.
+        :param distance_metric: callable or None
+        If None, uses standard Euclidean distances. For special applications,
+        the passing of a custom distance function is allowed.
         """
         super(MeanShiftStep, self).__init__()
         self.bandwidth = bandwidth
         self.use_keops = use_keops
         self.kernel = kernel
+        self.distance_metric = distance_metric
         assert self.kernel in self.KERNELS, f'Kernel {kernel} not supported. Choose one of {self.KERNELS}'
 
     @staticmethod
-    def mean_shift_step(points, reference=None, bandwidth=1, kernel='gaussian', use_keops=True):
+    def mean_shift_step(points, reference=None, bandwidth=1, kernel='gaussian', 
+                        distance_metric=None, use_keops=True):
         """
         Perform one mean shift step: Move points towards maxima of Kernel density estimate using reference.
         :param points: torch.FloatTensor or torch.cuda.FloatTensor
@@ -41,6 +46,9 @@ class MeanShiftStep(torch.nn.Module):
         Bandwidth of the kernel to be used, i.e. standard deviation for gaussian, radius for flat kernel.
         :param kernel: str
         Which kernel to use. Has to be one of MeanShiftStep.KERNELS .
+        :param distance_metric: callable or None
+        If None, uses standard Euclidean distances. For special applications,
+        the passing of a custom distance function is allowed.
         :param use_keops: bool
         Whether to use the PyKeOps Library or only vanilla PyTorch.
         :return: torch.FloatTensor
@@ -55,11 +63,14 @@ class MeanShiftStep(torch.nn.Module):
             points_i = LazyTensor(points_i)
             points_j = LazyTensor(points_j)
 
-        # array of vector differences
-        v_ij = points_i - points_j  # B N1 N2 E
+        if distance_metric is None:
+            # array of vector differences
+            v_ij = points_i - points_j  # B N1 N2 E
 
-        # array of squared distances
-        s_ij = (v_ij ** 2).sum(-1)  # B N1 N2 E
+            # array of squared distances
+            s_ij = (v_ij ** 2).sum(-1)  # B N1 N2 E
+        else:
+            s_ij = distance_metric(points_i, points_j)
 
         if kernel == MeanShiftStep.GAUSSIAN_KERNEL:
             factor = points.new([-1 / (2 * bandwidth ** 2)])
