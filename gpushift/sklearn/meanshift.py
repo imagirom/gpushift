@@ -40,7 +40,7 @@ class ClusteringStep:
         Inputs:
             :param bandwidth: float
             :param kernel: unary operation
-            :param distance_metric: binary operation
+            :param distance_metric: str, identifier
             :param max_clusters: int
             :param use_keops: bool
         """
@@ -49,6 +49,31 @@ class ClusteringStep:
         self.distance_metric = distance_metric
         self.max_clusters = max_clusters
         self.use_keops = use_keops
+
+#    def _get_distance_metric(self, distance_metric_name):
+#        r"""
+#        This function provides a distance metric function which works with
+#        torch. The Keops version that is used in MeanShift is different than
+#        the one in the clustering step (where keops acceleration is not yet 
+#        implemented).
+#
+#        Inputs:
+#            :param distance_metric_name: str, identifier.
+#        """
+#        _distance_metrics = {
+#                'euclidean'  :  lambda x,y : (x-y).square().sum(-1).sqrt(),
+#                'spherical'  :  lambda x,y : 1 - x.matmul(y),
+#                'composite'  :  None
+#        }
+#
+#        # Define separately to avoid huge lambda function
+#        def _composite(x,y):
+#            euclid_ = _distance_metrics('euclidean')
+#            sphere_ = _distance_metrics('spherical')
+#            return euclid_(x[...,-2:],y[...,-2:])**2 + sphere_(x[...,:-2],y[...,:-2])**2
+#
+#        _distance_metrics['composite'] = _composite
+#        return _distance_metrics[distance_metric_name]
 
     def __call__(self, points):
         r"""
@@ -79,9 +104,9 @@ class ClusteringStep:
                 break
 
             idx_unlabelled = indices_unlabelled[0,0].item()
-            query_point = points[idx_unlabelled,:]
+            query_point = points[idx_unlabelled,:].unsqueeze(0)
 
-            distances_from_point = self.distance_metric(points, query_point) # (N)
+            distances_from_point = self.distance_metric(points, query_point).squeeze(-1) # (N)
             neighbours_mask = distances_from_point < self.bandwidth
             unlabelled_clusters[neighbours_mask] = 0
             cluster_belonging[neighbours_mask] = counter # Counter also works as cluster id.
@@ -94,6 +119,7 @@ class ClusteringStep:
         for new_idx, cluster_id in enumerate(unique_cluster_ids):
             cluster_centers[new_idx, :] = points[ cluster_belonging == cluster_id ].mean(0)
 
+        # Old attempt at finding neighbours within a radius of each cell
         #points_i = LazyTensor(points[:,None,:,:]) # (B,1,N,C)
         #points_j = LazyTensor(points[:,:,None,:]) # (B,N,1,C)
 
@@ -153,10 +179,6 @@ class MeanShift(BaseEstimator, ClusterMixin):
             :param use_keops: bool, whether to use the gpu-accelerated version
                 of mean shift.
         """
-        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel=kernel, use_keops=use_keops)
-        self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
-            self._get_distance_metric(distance_metric), max_clusters=max_clusters, use_keops=False)
-
         self.bandwidth = bandwidth
         self.distance_metric = distance_metric
         self.kernel = kernel
@@ -166,6 +188,11 @@ class MeanShift(BaseEstimator, ClusterMixin):
         self.use_keops = use_keops
 
         self.cluster_centers_ = None
+
+        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel=kernel, use_keops=use_keops)
+        self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
+                self._get_distance_metric(distance_metric), 
+                max_clusters=max_clusters, use_keops=False)
 
     def _get_kernel(self, kernel_name):
         r"""
@@ -193,39 +220,53 @@ class MeanShift(BaseEstimator, ClusterMixin):
             :param distance_metric_name: str, descriptive name of the kernel.
 
         Outputs:
-            binary callable operation
+            binary callable operation, its inputs are (n_samples, n_features),
+            and (m_samples, n_features). The output shape is (n_samples, 
+            m_samples).
         """
         _distance_metrics = {
-                'euclidean'  :  lambda x,y : (x-y).square().sum(-1).sqrt(),
-                'spherical'  :  lambda x,y : 1 - x.dot(y),
-                #'composite'  :  # TODO
+                'euclidean'  :  lambda x,y : (x[:,None,:]-y[None,:,:]).square().sum(-1).sqrt(),
+                'spherical'  :  lambda x,y : 1 - (x@y.T),
+                'composite'  :  None
         }
+
+        # Define separately to avoid huge lambda function
+        def _composite(x,y):
+            r"""
+            Assumed that the last two dimensions are flat, and the rest
+            are spherical.
+            """
+            euclid_ = _distance_metrics['euclidean']
+            sphere_ = _distance_metrics['spherical']
+            return euclid_(x[:,-2:],y[:,-2:])**2 + sphere_(x[:,:-2],y[:,:-2])**2
+
+        _distance_metrics['composite'] = _composite
 
         return _distance_metrics[distance_metric_name]
 
-    def get_sp_composite_distance_metric(self, dims=(16,2)):
-        r"""
-        The composite metric for self-parent segmentation and tracking
-        algorithm. The space it works on is partly spherical and partly
-        Euclidean, in that order of dimensions.
-
-        Inputs:
-            :param dims: tuple (2,) ints. Shows the number of dimensions part
-                of the spherical and Euclidean space, in that order. Default
-                is (16,2) which means that the first 16 dimensions of the 
-                vectors worked on, form a spherical space, and the latter 2
-                are Euclidean.
-
-        Outputs:
-            callable binary operation. The distance between vectors belonging
-            to the composite vector space.
-        """
-        euclidean = self._get_distance_metric('euclidean')
-        spherical = self._get_distance_metric('spherical')
-
-        composite = lambda x,y : euclidean(x,y)**2 + spherical(x,y)
-
-        return composite
+#    def get_sp_composite_distance_metric(self, dims=(16,2)):
+#        r"""
+#        The composite metric for self-parent segmentation and tracking
+#        algorithm. The space it works on is partly spherical and partly
+#        Euclidean, in that order of dimensions.
+#
+#        Inputs:
+#            :param dims: tuple (2,) ints. Shows the number of dimensions part
+#                of the spherical and Euclidean space, in that order. Default
+#                is (16,2) which means that the first 16 dimensions of the 
+#                vectors worked on, form a spherical space, and the latter 2
+#                are Euclidean.
+#
+#        Outputs:
+#            callable binary operation. The distance between vectors belonging
+#            to the composite vector space.
+#        """
+#        euclidean = self._get_distance_metric('euclidean')
+#        spherical = self._get_distance_metric('spherical')
+#
+#        composite = lambda x,y : euclidean(x,y)**2 + spherical(x,y)
+#
+#        return composite
 
     def fit(self, X):
         r"""
@@ -262,7 +303,7 @@ class MeanShift(BaseEstimator, ClusterMixin):
         """
         metric_function = self._get_distance_metric(self.distance_metric)
 
-        distances_to_centers = metric_function(X[:,None,:], self.cluster_centers_[None,:,:]) # (N,K)
+        distances_to_centers = metric_function(X, self.cluster_centers_) # (N,K)
 
         return torch.argmin(distances_to_centers, dim=1)
 

@@ -106,7 +106,10 @@ class MeanShiftStep(torch.nn.Module):
         """
         # points should have shape B N E
         return self.mean_shift_step(points, reference,
-                                    bandwidth=self.bandwidth, kernel=self.kernel, use_keops=self.use_keops)
+                                    bandwidth=self.bandwidth, 
+                                    distance_metric=self.distance_metric,
+                                    kernel=self.kernel, 
+                                    use_keops=self.use_keops)
 
 
 class MeanShift(torch.nn.Module):
