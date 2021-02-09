@@ -90,8 +90,6 @@ class ClusteringStep:
 
         N,C = points.shape
 
-        assert self.max_clusters < N
-
         unlabelled_clusters = torch.arange(N)
         cluster_belonging = torch.zeros(N)
 
@@ -226,7 +224,7 @@ class MeanShift(BaseEstimator, ClusterMixin):
         """
         _distance_metrics = {
                 'euclidean'  :  lambda x,y : (x[:,None,:]-y[None,:,:]).square().sum(-1).sqrt(),
-                'spherical'  :  lambda x,y : 1 - (x@y.T),
+                'spherical'  :  lambda x,y : 1 - (x@y.T)**2,
                 'composite'  :  None
         }
 
@@ -279,16 +277,24 @@ class MeanShift(BaseEstimator, ClusterMixin):
         #from sp_tracking.visuals import visualize_PCA
         #import matplotlib.pyplot as plt
         #import pdb; pdb.set_trace()
+        N,_ = X.shape
 
         shifted = X[None,:,:] # (1,N,C)
         X_cp = X[None,:,:]
         for _ in range(self.n_iter):
+
+            if N == 1:
+                # Corner case of passing a single point. Cannot apply the mean
+                # shift step in that case.
+                print("Attempted meanshift on a single point.")
+                break
+
             if self.blurring:
                 shifted = self.meanshift_step(shifted)
             else:
                 shifted = self.meanshift_step(shifted, X_cp)
 
-        self.cluster_centers_ = self.clustering_step(shifted[0]) # (1,N)
+        self.cluster_centers_ = self.clustering_step(shifted[0])
 
     def predict(self, X):
         r"""
