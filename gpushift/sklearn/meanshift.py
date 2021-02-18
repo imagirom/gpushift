@@ -51,7 +51,7 @@ class ClusteringStep:
         self.distance_metric = distance_metric
         self.max_clusters = max_clusters
         self.use_keops = use_keops
-        self.cluster_center_function = cluster_mean_function
+        self.cluster_center_function = cluster_center_function
 
     def __call__(self, points):
         r"""
