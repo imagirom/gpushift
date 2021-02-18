@@ -187,9 +187,10 @@ class MeanShift(BaseEstimator, ClusterMixin):
 
         self.cluster_centers_ = None
 
-        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel=kernel, 
+        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel='custom', 
                 use_keops=use_keops, 
-                distance_metric=self._get_distance_metric(distance_metric))
+                distance_metric=self._get_distance_metric(distance_metric),
+                custom_kernel=self._get_kernel(kernel))
 
         self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
                 self._get_distance_metric(distance_metric), 
@@ -250,30 +251,6 @@ class MeanShift(BaseEstimator, ClusterMixin):
         _distance_metrics['composite'] = _composite
 
         return _distance_metrics[distance_metric_name]
-
-#    def get_sp_composite_distance_metric(self, dims=(16,2)):
-#        r"""
-#        The composite metric for self-parent segmentation and tracking
-#        algorithm. The space it works on is partly spherical and partly
-#        Euclidean, in that order of dimensions.
-#
-#        Inputs:
-#            :param dims: tuple (2,) ints. Shows the number of dimensions part
-#                of the spherical and Euclidean space, in that order. Default
-#                is (16,2) which means that the first 16 dimensions of the 
-#                vectors worked on, form a spherical space, and the latter 2
-#                are Euclidean.
-#
-#        Outputs:
-#            callable binary operation. The distance between vectors belonging
-#            to the composite vector space.
-#        """
-#        euclidean = self._get_distance_metric('euclidean')
-#        spherical = self._get_distance_metric('spherical')
-#
-#        composite = lambda x,y : euclidean(x,y)**2 + spherical(x,y)
-#
-#        return composite
 
     def fit(self, X):
         r"""
