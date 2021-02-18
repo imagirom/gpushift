@@ -187,7 +187,10 @@ class MeanShift(BaseEstimator, ClusterMixin):
 
         self.cluster_centers_ = None
 
-        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel=kernel, use_keops=use_keops)
+        self.meanshift_step = MeanShiftStep(bandwidth=bandwidth, kernel=kernel, 
+                use_keops=use_keops, 
+                distance_metric=self._get_distance_metric(distance_metric))
+
         self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
                 self._get_distance_metric(distance_metric), 
                 max_clusters=max_clusters, use_keops=False)
@@ -204,8 +207,8 @@ class MeanShift(BaseEstimator, ClusterMixin):
         """
         _kernels = {
                 'gaussian'  :       lambda x : ( -x / (2*self.bandwidth**2)).exp(),
-                'epanechnikov'  :   lambda x : 1 - (x**2)/(self.bandwidth**2),
-                'flat'  :           lambda x : x < self.bandwidth
+                'epanechnikov'  :   lambda x : (1 - (x**2)/(self.bandwidth**2)).relu(),
+                'flat'  :           lambda x : (x - self.bandwidth).step()
         }
 
         return _kernels[kernel_name]
@@ -218,13 +221,12 @@ class MeanShift(BaseEstimator, ClusterMixin):
             :param distance_metric_name: str, descriptive name of the kernel.
 
         Outputs:
-            binary callable operation, its inputs are (n_samples, n_features),
-            and (m_samples, n_features). The output shape is (n_samples, 
-            m_samples).
+            binary callable operation, its inputs are (B, N, 1, C), and
+            and (B,1,M,C). The output shape is (B, N, M).
         """
         _distance_metrics = {
-                'euclidean'  :  lambda x,y : (x[:,None,:]-y[None,:,:]).square().sum(-1).sqrt(),
-                'spherical'  :  lambda x,y : 1 - (x@y.T)**2,
+                'euclidean'  :  lambda x,y : (x-y).square().sum(-1).sqrt(),
+                'spherical'  :  lambda x,y : 1 - (x*y).sum(-1)**2,
                 'composite'  :  None
         }
 
@@ -236,7 +238,14 @@ class MeanShift(BaseEstimator, ClusterMixin):
             """
             euclid_ = _distance_metrics['euclidean']
             sphere_ = _distance_metrics['spherical']
-            return euclid_(x[:,-2:],y[:,-2:])**2 + sphere_(x[:,:-2],y[:,:-2])**2
+            if isinstance(x, LazyTensor):
+                _,_,_, C = x.shape
+                _,_,_, Cy = y.shape
+                assert C == Cy
+
+                return euclid_(x[C-2:C],y[C-2:C])**2 + sphere_(x[C-2:C],y[C-2:C])**2
+            else:
+                return euclid_(x[...,-2:],y[...,-2:])**2 + sphere_(x[...,:-2],y[...,:-2])**2
 
         _distance_metrics['composite'] = _composite
 
@@ -309,9 +318,17 @@ class MeanShift(BaseEstimator, ClusterMixin):
         """
         metric_function = self._get_distance_metric(self.distance_metric)
 
-        distances_to_centers = metric_function(X, self.cluster_centers_) # (N,K)
+        if self.use_keops:
+            points_i = LazyTensor(X[None,:,None,:]) # (B=1, N, 1, C)
+            points_j = LazyTensor(self.cluster_centers_[None,None,:,:]) # (B=1, 1, K, C)
 
-        return torch.argmin(distances_to_centers, dim=1)
+            cluster_id_ = metric_function(points_i, points_j).argmin(dim=2)[0,:,0] # rm B,C dims
+        else:
+            # TODO Untested
+            distances_to_centers = metric_function(X[:,None,:], self.cluster_centers_[None,:,:]) # (N,K)
+            cluster_id_ = torch.argmin(distances_to_centers, dim=1)
+
+        return cluster_id_
 
     def fit_predict(self, X):
         r"""
