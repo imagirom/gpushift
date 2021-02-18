@@ -244,7 +244,7 @@ class MeanShift(BaseEstimator, ClusterMixin):
                 _,_,_, Cy = y.shape
                 assert C == Cy
 
-                return euclid_(x[C-2:C],y[C-2:C])**2 + sphere_(x[C-2:C],y[C-2:C])**2
+                return euclid_(x[C-2:C],y[C-2:C])**2 + sphere_(x[0:C-2],y[0:C-2])**2
             else:
                 return euclid_(x[...,-2:],y[...,-2:])**2 + sphere_(x[...,:-2],y[...,:-2])**2
 
