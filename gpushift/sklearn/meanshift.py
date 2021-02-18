@@ -151,7 +151,8 @@ class MeanShift(BaseEstimator, ClusterMixin):
     """
 
     def __init__(self, bandwidth, distance_metric='composite', kernel='gaussian', 
-                       n_iter=15, max_clusters=500, blurring=False, use_keops=True):
+                       n_iter=15, max_clusters=500, blurring=False, use_keops=True,
+                       meanshift_step_transform=None):
         r"""
         Inputs:
             :param bandwidth: int, bandwidth of the kernel. Some kernels such
@@ -176,6 +177,10 @@ class MeanShift(BaseEstimator, ClusterMixin):
 
             :param use_keops: bool, whether to use the gpu-accelerated version
                 of mean shift.
+
+            :param meanshift_step_transform: callable or None. This function is
+                called on the shifted points after each iteration of the shift
+                step. Its input is (n_samples, n_features).
         """
         self.bandwidth = bandwidth
         self.distance_metric = distance_metric
@@ -191,6 +196,8 @@ class MeanShift(BaseEstimator, ClusterMixin):
                 use_keops=use_keops, 
                 distance_metric=self._get_distance_metric(distance_metric),
                 custom_kernel=self._get_kernel(kernel))
+
+        self.meanshift_step_transform = meanshift_step_transform
 
         self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
                 self._get_distance_metric(distance_metric), 
@@ -279,6 +286,9 @@ class MeanShift(BaseEstimator, ClusterMixin):
                 shifted = self.meanshift_step(shifted)
             else:
                 shifted = self.meanshift_step(shifted, X_cp)
+
+            if self.meanshift_step_transform is not None:
+                shifted = self.meanshift_step_transform(shifted)
 
         self.cluster_centers_ = self.clustering_step(shifted[0])
 
