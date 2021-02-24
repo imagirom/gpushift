@@ -35,7 +35,8 @@ class ClusteringStep:
     centers after meanshift has moved its points sufficiently close together.
     """
 
-    def __init__(self, bandwidth, kernel, distance_metric, max_clusters=500, use_keops=False):
+    def __init__(self, bandwidth, kernel, distance_metric, max_clusters=500, use_keops=False,
+            cluster_center_function=None):
         r"""
         Inputs:
             :param bandwidth: float
@@ -43,37 +44,14 @@ class ClusteringStep:
             :param distance_metric: str, identifier
             :param max_clusters: int
             :param use_keops: bool
+            :param cluster_center_function: None or callable
         """
         self.bandwidth = bandwidth
         self.kernel = kernel
         self.distance_metric = distance_metric
         self.max_clusters = max_clusters
         self.use_keops = use_keops
-
-#    def _get_distance_metric(self, distance_metric_name):
-#        r"""
-#        This function provides a distance metric function which works with
-#        torch. The Keops version that is used in MeanShift is different than
-#        the one in the clustering step (where keops acceleration is not yet 
-#        implemented).
-#
-#        Inputs:
-#            :param distance_metric_name: str, identifier.
-#        """
-#        _distance_metrics = {
-#                'euclidean'  :  lambda x,y : (x-y).square().sum(-1).sqrt(),
-#                'spherical'  :  lambda x,y : 1 - x.matmul(y),
-#                'composite'  :  None
-#        }
-#
-#        # Define separately to avoid huge lambda function
-#        def _composite(x,y):
-#            euclid_ = _distance_metrics('euclidean')
-#            sphere_ = _distance_metrics('spherical')
-#            return euclid_(x[...,-2:],y[...,-2:])**2 + sphere_(x[...,:-2],y[...,:-2])**2
-#
-#        _distance_metrics['composite'] = _composite
-#        return _distance_metrics[distance_metric_name]
+        self.cluster_center_function = cluster_mean_function
 
     def __call__(self, points):
         r"""
@@ -115,32 +93,11 @@ class ClusteringStep:
         num_clusters = len(unique_cluster_ids)
         cluster_centers = torch.zeros(num_clusters,C)
         for new_idx, cluster_id in enumerate(unique_cluster_ids):
-            cluster_centers[new_idx, :] = points[ cluster_belonging == cluster_id ].mean(0)
-
-        # Old attempt at finding neighbours within a radius of each cell
-        #points_i = LazyTensor(points[:,None,:,:]) # (B,1,N,C)
-        #points_j = LazyTensor(points[:,:,None,:]) # (B,N,1,C)
-
-        #pairwise_distances_ij = self.distance_metric(points_i, points_j) # (B,N,N,1)
-
-        #neighbours_ij = (torch.Tensor(self.bandwidth**2) - pairwise_distances_ij).step() # (B,N,N,1) 0 or 1
-
-        #intensities = self.kernel(pairwise_distances_ij).sum(2).unsqueeze(-1) # (B,N,1,1)
-        #possible_clusters = LazyTensor(-intensities).argKmin(self.max_clusters, dim=1) # (B,1,K)
-
-        #are_cluster_centers_ = torch.ones(B,N).bool()
-        #for b in range(B):
-        #    possible_cluster_indices = possible_clusters[b,0] # (K,)
-        #    possible_cluster_intensities = intensities[b, possible_cluster_indices,0,0] # (K,)
-
-        #    argsort_res = torch.argsort(possible_cluster_intensities) # Ascending
-        #    sorted_cluster_indices = possible_cluster_indices[argsort_res] # (K,)
-
-        #    for idx in sorted_cluster_indices:
-        #        import pdb; pdb.set_trace()
-        #        are_neighbours = neighbours_ij[b,idx] # (N,1)
-        #        are_cluster_centers_[b,are_neighbours] = False
-        #        are_cluster_centers_[b,idx] = True
+            if self.cluster_center_function is None:
+                cluster_centers[new_idx, :] = points[ cluster_belonging == cluster_id ].mean(0)
+            else:
+                cluster_centers[new_idx, :] = self.cluster_center_function( 
+                        points[ cluster_belonging == cluster_id ][None,...] )[0]
 
         return cluster_centers
 
@@ -152,7 +109,7 @@ class MeanShift(BaseEstimator, ClusterMixin):
 
     def __init__(self, bandwidth, distance_metric='composite', kernel='gaussian', 
                        n_iter=15, max_clusters=500, blurring=False, use_keops=True,
-                       meanshift_step_transform=None):
+                       meanshift_step_transform=None, cluster_center_function=None):
         r"""
         Inputs:
             :param bandwidth: int, bandwidth of the kernel. Some kernels such
@@ -181,6 +138,13 @@ class MeanShift(BaseEstimator, ClusterMixin):
             :param meanshift_step_transform: callable or None. This function is
                 called on the shifted points after each iteration of the shift
                 step. Its input is (n_samples, n_features).
+
+            :param cluster_center_function: callable or None. If None, the
+                cluster centers will be calculated as the mean over all dims of
+                the selected points (during the clustering step). Can pass a
+                custom function, which preserves certain properties of the
+                embeddings (such as spherical embeddings), or has any additional
+                required properties.
         """
         self.bandwidth = bandwidth
         self.distance_metric = distance_metric
@@ -200,8 +164,9 @@ class MeanShift(BaseEstimator, ClusterMixin):
         self.meanshift_step_transform = meanshift_step_transform
 
         self.clustering_step = ClusteringStep(bandwidth, self._get_kernel(kernel), 
-                self._get_distance_metric(distance_metric), 
-                max_clusters=max_clusters, use_keops=False)
+                self._get_distance_metric(distance_metric),
+                max_clusters=max_clusters, use_keops=False,
+                cluster_center_function=cluster_center_function)
 
     def _get_kernel(self, kernel_name):
         r"""
@@ -304,6 +269,12 @@ class MeanShift(BaseEstimator, ClusterMixin):
             datapoint which cluster center it belongs to.
         """
         metric_function = self._get_distance_metric(self.distance_metric)
+        N_, _ = X.shape
+        K_, _ = self.cluster_centers_.shape
+
+        if K_ == 1:
+            # All points will belong to cluster 0.
+            return torch.zeros(N_)
 
         if self.use_keops:
             points_i = LazyTensor(X[None,:,None,:]) # (B=1, N, 1, C)
