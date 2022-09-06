@@ -46,7 +46,9 @@ class MeanShiftStep(torch.nn.Module):
         :return: torch.FloatTensor
         Shifted points. Shape identical to points.
         """
+        points = points.contiguous()  # PyKeOps needs contiguous tensors
         reference = points if reference is None else reference
+        reference = reference.contiguous()
         assert reference.shape[-1] == points.shape[-1], f'{reference.shape}, {points.shape}'
         points_i = points[:, :, None, :]     # B N1 1 E
         points_j = reference[:, None, :, :]  # B 1 N2 E
