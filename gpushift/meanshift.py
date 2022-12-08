@@ -11,9 +11,11 @@ class MeanShiftStep(torch.nn.Module):
     GAUSSIAN_KERNEL = 'gaussian'
     FLAT_KERNEL = 'flat'
     EPANECHNIKOV_KERNEL = 'epanechnikov'
-    KERNELS = [GAUSSIAN_KERNEL, FLAT_KERNEL, EPANECHNIKOV_KERNEL]
+    CUSTOM = 'custom'
+    KERNELS = [GAUSSIAN_KERNEL, FLAT_KERNEL, EPANECHNIKOV_KERNEL, CUSTOM]
 
-    def __init__(self, bandwidth, kernel='gaussian', use_keops=True):
+    def __init__(self, bandwidth, kernel='gaussian', distance_metric=None, use_keops=True,
+            custom_kernel=None):
         """
         Module encapsulating a single mean shift step.
         :param bandwidth: float
@@ -22,15 +24,28 @@ class MeanShiftStep(torch.nn.Module):
         Which kernel to use. Has to be one of MeanShiftStep.KERNELS .
         :param use_keops: bool
         Whether to use the PyKeOps Library or only vanilla PyTorch.
+        :param distance_metric: callable or None
+        If None, uses standard Euclidean distances. For special applications,
+        the passing of a custom distance function is allowed.
+        :param custom_kernel: callable or None
+        If kernel str is set to 'custom', then ''custom_kernel'' is expected
+        to be callable and will be used to compute the kernel, rather than the
+        built-in kernel functions.
         """
         super(MeanShiftStep, self).__init__()
         self.bandwidth = bandwidth
         self.use_keops = use_keops
         self.kernel = kernel
+        self.distance_metric = distance_metric
+        self.custom_kernel = custom_kernel
+
+        assert not ( custom_kernel == None and kernel == MeanShiftStep.CUSTOM ),\
+                "If kernel is CUSTOM, :custom_kernel: must be callable and not None."
         assert self.kernel in self.KERNELS, f'Kernel {kernel} not supported. Choose one of {self.KERNELS}'
 
     @staticmethod
-    def mean_shift_step(points, reference=None, bandwidth=1, kernel='gaussian', use_keops=True):
+    def mean_shift_step(points, reference=None, bandwidth=1, kernel='gaussian', 
+                        distance_metric=None, use_keops=True, custom_kernel=None):
         """
         Perform one mean shift step: Move points towards maxima of Kernel density estimate using reference.
         :param points: torch.FloatTensor or torch.cuda.FloatTensor
@@ -41,10 +56,17 @@ class MeanShiftStep(torch.nn.Module):
         Bandwidth of the kernel to be used, i.e. standard deviation for gaussian, radius for flat kernel.
         :param kernel: str
         Which kernel to use. Has to be one of MeanShiftStep.KERNELS .
+        :param distance_metric: callable or None
+        If None, uses standard Euclidean distances. For special applications,
+        the passing of a custom distance function is allowed.
         :param use_keops: bool
         Whether to use the PyKeOps Library or only vanilla PyTorch.
         :return: torch.FloatTensor
         Shifted points. Shape identical to points.
+        :param custom_kernel: callable or None
+        If kernel str is set to 'custom', then ''custom_kernel'' is expected
+        to be callable and will be used to compute the kernel, rather than the
+        built-in kernel functions.
         """
         points = points.contiguous()  # PyKeOps needs contiguous tensors
         reference = points if reference is None else reference
@@ -57,11 +79,14 @@ class MeanShiftStep(torch.nn.Module):
             points_i = LazyTensor(points_i)
             points_j = LazyTensor(points_j)
 
-        # array of vector differences
-        v_ij = points_i - points_j  # B N1 N2 E
+        if distance_metric is None:
+            # array of vector differences
+            v_ij = points_i - points_j  # B N1 N2 E
 
-        # array of squared distances
-        s_ij = (v_ij ** 2).sum(-1)  # B N1 N2 E
+            # array of squared distances
+            s_ij = (v_ij ** 2).sum(-1)  # B N1 N2 E
+        else:
+            s_ij = distance_metric(points_i, points_j)
 
         if kernel == MeanShiftStep.GAUSSIAN_KERNEL:
             factor = points.new([-1 / (2 * bandwidth ** 2)])
@@ -75,6 +100,9 @@ class MeanShiftStep(torch.nn.Module):
         elif kernel == MeanShiftStep.EPANECHNIKOV_KERNEL:
             squared_radius = points.new([bandwidth ** 2])
             k_ij = (-s_ij + squared_radius).relu()  # B N1 N2 (1)
+        elif kernel == MeanShiftStep.CUSTOM:
+            assert custom_kernel is not None
+            k_ij = custom_kernel(s_ij)
         else:
             assert False, f'Kernel {kernel} not supported. Choose one of {MeanShiftStep.KERNELS}'
 
@@ -97,7 +125,11 @@ class MeanShiftStep(torch.nn.Module):
         """
         # points should have shape B N E
         return self.mean_shift_step(points, reference,
-                                    bandwidth=self.bandwidth, kernel=self.kernel, use_keops=self.use_keops)
+                                    bandwidth=self.bandwidth, 
+                                    distance_metric=self.distance_metric,
+                                    kernel=self.kernel, 
+                                    use_keops=self.use_keops,
+                                    custom_kernel=self.custom_kernel)
 
 
 class MeanShift(torch.nn.Module):
